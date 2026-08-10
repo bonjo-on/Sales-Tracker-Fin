@@ -80,6 +80,11 @@
   .gap-fill{height:100%; background:var(--bad); border-radius:6px;}
   .gap-num{width:78px; text-align:right; font-size:12px; color:var(--bad); font-weight:600;}
   .gap-empty{font-size:12.5px; color:var(--good); padding:6px 0;}
+  .gap-two-col{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .gap-stat{background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px;}
+  .gap-stat-label{font-size:12px; font-weight:600; color:var(--navy); margin-bottom:6px;}
+  .gap-stat-value{font-family:Georgia, serif; font-size:26px; font-weight:700; margin-bottom:4px;}
+  .gap-stat-sub{font-size:11px; color:var(--inkSoft);}
   .footnote{font-size:11.5px; color:var(--inkSoft); line-height:1.6;}
   .tabs-note{font-size:13px; color:var(--inkSoft);}
 </style>
@@ -304,24 +309,25 @@ function render(){
   `;
 
   // Mini row
-  const gapData = computeGapData(category, asOfMonth);
-  const ytdGapStat = gapData
-    ? (gapData.ytdGapUnits > 0
-        ? `<span style="color:var(--bad)">+${gapData.ytdGapUnits.toLocaleString("en-US")}개</span>`
-        : `<span style="color:var(--good)">달성</span>`)
-    : `<span style="color:var(--inkSoft)">—</span>`;
-  document.getElementById("miniRow").innerHTML = `
-    <div class="mini"><div class="label">남은 목표</div><div class="value">${cur(remainingBudget)}</div></div>
-    <div class="mini"><div class="label">남은 개월</div><div class="value">${monthsLeft}개월</div></div>
-    <div class="mini"><div class="label">원 예산 대비 필요 페이스</div><div class="value" style="color:${paceColor(requiredVsOriginal)}">${requiredVsOriginal==null?"—":requiredVsOriginal.toFixed(0)+"%"}</div></div>
-    <div class="mini"><div class="label">YTD 수량 Ach%</div><div class="value" style="color:${paceColor(ytdAchUnit)}">${ytdAchUnit==null?"—":ytdAchUnit.toFixed(1)+"%"}</div></div>
-    <div class="mini"><div class="label">YTD 부족 수량 (ASP 환산)</div><div class="value">${ytdGapStat}</div></div>
-  `;
+  const miniItems = [
+    `<div class="mini"><div class="label">남은 목표</div><div class="value">${cur(remainingBudget)}</div></div>`,
+    `<div class="mini"><div class="label">남은 개월</div><div class="value">${monthsLeft}개월</div></div>`,
+  ];
+  if(currency === "krw"){
+    miniItems.push(`<div class="mini"><div class="label">원 예산 대비 필요 페이스</div><div class="value" style="color:${paceColor(requiredVsOriginal)}">${requiredVsOriginal==null?"—":requiredVsOriginal.toFixed(0)+"%"}</div></div>`);
+  }
+  miniItems.push(`<div class="mini"><div class="label">YTD 수량 Ach%</div><div class="value" style="color:${paceColor(ytdAchUnit)}">${ytdAchUnit==null?"—":ytdAchUnit.toFixed(1)+"%"}</div></div>`);
+  document.getElementById("miniRow").innerHTML = miniItems.join("");
 
   document.getElementById("chartTitle").textContent = `월별 목표 vs 실적 (${catLabel} · ${currency.toUpperCase()})`;
   drawChart(budgetSet[currency], actualSet[currency], asOfMonth, currency);
 
-  renderGapPanel(category, asOfMonth);
+  if(category === "total"){
+    document.getElementById("gapPanel").style.display = "";
+    renderGapPanel(asOfMonth);
+  } else {
+    document.getElementById("gapPanel").style.display = "none";
+  }
 
   // Table
   const unitLabel = currency === "krw" ? "(단위: 원)" : "(단위: USD)";
@@ -374,54 +380,53 @@ function bindTableInputs(category){
   });
 }
 
-function renderGapPanel(category, asOfMonth){
+function renderGapPanel(asOfMonth){
   const panel = document.getElementById("gapPanel");
-
-  if(category === "total"){
-    panel.innerHTML = `<div class="gap-title">ASP 기준 추가 필요 판매량</div>
-      <div class="gap-sub">Coronary/Peripheral 탭에서 카테고리별 ASP 기준으로 확인하세요 (전체 탭은 ASP가 카테고리마다 달라 합산이 부정확합니다).</div>`;
-    return;
-  }
-
-  const { asp, gaps, currentMonth } = computeGapData(category, asOfMonth);
-  const catLabel = category === "coronary" ? "Coronary" : "Peripheral";
   const curLabel = MONTHS[asOfMonth];
 
-  let html = `<div class="gap-title">ASP 기준 추가 필요 판매량 — ${catLabel}</div>
-    <div class="gap-sub">ASP ${asp.toLocaleString("ko-KR")}원 기준 · 목표 미달월의 매출 갭을 수량으로 환산</div>`;
+  const budgetTotalKRW = BUDGET.coronary.krw[asOfMonth] + BUDGET.peripheral.krw[asOfMonth];
+  const corActual = state.actual.coronary.krw[asOfMonth];
+  const perActual = state.actual.peripheral.krw[asOfMonth];
+  const hasActual = corActual != null || perActual != null;
+  const actualTotalKRW = (corActual||0) + (perActual||0);
 
-  if(currentMonth == null){
-    html += `<div class="gap-summary" style="background:#F4F2EC; border-color:var(--line);">
-      <span class="txt">${curLabel} 실적이 아직 입력되지 않았습니다. 아래 표에 실적을 입력하면 이번 달 필요 판매량이 표시됩니다.</span>
-    </div>`;
-  } else if(currentMonth.units > 0){
-    html += `<div class="gap-summary">
-      <span class="num">+${currentMonth.units.toLocaleString("en-US")}개</span>
-      <span class="txt">${curLabel} 목표 대비 부족한 매출(${currentMonth.gapKRW.toLocaleString("ko-KR")}원)을 이번 달 안에 메우려면 필요한 추가 판매량</span>
+  let bodyHtml;
+  if(!hasActual){
+    bodyHtml = `<div class="gap-summary" style="background:#F4F2EC; border-color:var(--line);">
+      <span class="txt">${curLabel} 실적이 아직 입력되지 않았습니다.</span>
     </div>`;
   } else {
-    html += `<div class="gap-summary" style="background:#EDF4EF; border-color:#D3E5D8;">
-      <span class="num" style="color:var(--good)">✓</span>
-      <span class="txt">${curLabel} 목표를 이미 달성했습니다 — 추가 필요 판매량 없음</span>
-    </div>`;
-  }
-
-  if(gaps.length === 0){
-    html += `<div class="gap-empty">월별 목표 미달 구간이 없습니다.</div>`;
-  } else {
-    const maxUnits = Math.max(...gaps.map(g=>g.units));
-    html += gaps.map(g => {
-      const pct = maxUnits ? (g.units/maxUnits)*100 : 0;
-      const isCurrent = g.i === asOfMonth;
-      return `<div class="gap-row">
-        <div class="gap-month" style="${isCurrent?'color:var(--coral); font-weight:700;':''}">${MONTHS[g.i]}</div>
-        <div class="gap-track"><div class="gap-fill" style="width:${pct}%; ${isCurrent?'background:var(--coral);':''}"></div></div>
-        <div class="gap-num" style="${isCurrent?'color:var(--coral);':''}">+${g.units.toLocaleString("en-US")}개</div>
+    const gap = budgetTotalKRW - actualTotalKRW;
+    if(gap <= 0){
+      bodyHtml = `<div class="gap-summary" style="background:#EDF4EF; border-color:#D3E5D8;">
+        <span class="num" style="color:var(--good)">✓</span>
+        <span class="txt">${curLabel} 전체 목표를 이미 달성했습니다</span>
       </div>`;
-    }).join("");
+    } else {
+      const corUnits = Math.round(gap / ASP_KRW.coronary);
+      const perUnits = Math.round(gap / ASP_KRW.peripheral);
+      bodyHtml = `
+        <div class="gap-sub" style="margin-bottom:12px;">${curLabel} 전체 부족 매출 ${gap.toLocaleString("ko-KR")}원을 한 제품군만으로 메운다면</div>
+        <div class="gap-two-col">
+          <div class="gap-stat">
+            <div class="gap-stat-label">Coronary</div>
+            <div class="gap-stat-value" style="color:var(--bad)">+${corUnits.toLocaleString("en-US")}개</div>
+            <div class="gap-stat-sub">ASP ${ASP_KRW.coronary.toLocaleString("ko-KR")}원 기준</div>
+          </div>
+          <div class="gap-stat">
+            <div class="gap-stat-label">Peripheral</div>
+            <div class="gap-stat-value" style="color:var(--bad)">+${perUnits.toLocaleString("en-US")}개</div>
+            <div class="gap-stat-sub">ASP ${ASP_KRW.peripheral.toLocaleString("ko-KR")}원 기준</div>
+          </div>
+        </div>`;
+    }
   }
 
-  panel.innerHTML = html;
+  panel.innerHTML = `
+    <div class="gap-title">ASP 기준 추가 필요 판매량 — ${curLabel}</div>
+    <div class="gap-sub">전체 부족 매출을 Coronary 또는 Peripheral 단독으로 메운다면 각각 몇 개가 필요한지 환산</div>
+    ${bodyHtml}
+  `;
 }
 
 function computeGapData(category, asOfMonth){
@@ -435,20 +440,20 @@ function computeGapData(category, asOfMonth){
     const a = actualKRW[i];
     if(a==null) continue;
     const g = budgetKRW[i] - a;
-    if(g > 0) gaps.push({ i, gapKRW: g, units: Math.ceil(g/asp) });
+    if(g > 0) gaps.push({ i, gapKRW: g, units: Math.round(g/asp) });
   }
 
   const ytdBudget = sum(budgetKRW.slice(0, asOfMonth+1));
   const ytdActual = sum(actualKRW.slice(0, asOfMonth+1).map(v=>v||0));
   const ytdGapKRW = ytdBudget - ytdActual;
-  const ytdGapUnits = ytdGapKRW > 0 ? Math.ceil(ytdGapKRW/asp) : 0;
+  const ytdGapUnits = ytdGapKRW > 0 ? Math.round(ytdGapKRW/asp) : 0;
 
   const curActual = actualKRW[asOfMonth];
   const curBudget = budgetKRW[asOfMonth];
   let currentMonth = null;
   if(curActual != null){
     const g = curBudget - curActual;
-    currentMonth = { gapKRW: g, units: g > 0 ? Math.ceil(g/asp) : 0 };
+    currentMonth = { gapKRW: g, units: g > 0 ? Math.round(g/asp) : 0 };
   }
 
   return { asp, gaps, ytdGapKRW, ytdGapUnits, currentMonth };
