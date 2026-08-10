@@ -64,6 +64,7 @@
   td input::-webkit-outer-spin-button, td input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
   td input[type=number]{ -moz-appearance:textfield; }
   .table-title .unit{font-weight:400; color:var(--inkSoft); font-size:12px; margin-left:4px;}
+  .auto-tag{font-weight:400; color:var(--inkSoft); font-size:10.5px;}
   .table-scroll{overflow-x:auto;}
   .gap-panel{margin-bottom:20px;}
   .gap-title{font-size:13px; font-weight:600; color:var(--navy); margin-bottom:2px;}
@@ -133,6 +134,7 @@
     · YTD 페이스 = 실적 ÷ 동기간(경과 개월) 목표 — 실제 달성 속도를 보는 지표<br>
     · 연간 Ach% = 실적 ÷ 연간 총목표 — 참고용이며 하반기 미도래 예산까지 분모에 포함되어 낮게 나옴<br>
     · 일할 페이스 = 이번 달 실적 ÷ (이번 달 목표 × 경과일수/총일수) — 월 중간 리뷰용<br>
+    · USD 실적은 별도 입력 없이 KRW 실적 ÷ 1,335(총 blended 환율)로 자동 환산됩니다. KRW 탭에서만 실적을 입력하세요.<br>
     · 이 파일은 브라우저(이 기기)의 로컬 저장소에 데이터를 저장합니다. 다른 기기·브라우저에서 열면 별도로 시작됩니다.
   </div>
 
@@ -157,6 +159,7 @@ const BUDGET = {
 };
 
 const ASP_KRW = { coronary: 256500, peripheral: 124000 };
+const BLENDED_RATE = 1335; // KRW per USD, used to auto-derive USD actuals from KRW input
 
 const SEED_ACTUAL = {
   coronary: {
@@ -230,9 +233,9 @@ function combinedActual(){
   for(let i=0;i<12;i++){
     const has = c.krw[i]!=null || p.krw[i]!=null;
     out.krw.push(has ? (c.krw[i]||0)+(p.krw[i]||0) : null);
-    out.usd.push(has ? (c.usd[i]||0)+(p.usd[i]||0) : null);
     out.unit.push(has ? (c.unit[i]||0)+(p.unit[i]||0) : null);
   }
+  out.usd = out.krw.map(v => v==null ? null : v/BLENDED_RATE);
   return out;
 }
 
@@ -240,7 +243,11 @@ function combinedActual(){
 function render(){
   const category = state.category, currency = state.currency, asOfMonth = state.asOfMonth, asOfDay = state.asOfDay;
   const budgetSet = category === "total" ? combinedBudget() : BUDGET[category];
-  const actualSet = category === "total" ? combinedActual() : state.actual[category];
+  const actualSet = category === "total" ? combinedActual() : {
+    krw: state.actual[category].krw,
+    usd: state.actual[category].krw.map(v => v==null ? null : v/BLENDED_RATE),
+    unit: state.actual[category].unit,
+  };
   const cur = currency === "krw" ? fmtKRW : fmtUSD;
   const catLabel = {coronary:"Coronary", peripheral:"Peripheral", total:"Total"}[category];
 
@@ -345,14 +352,25 @@ function render(){
 
 function buildTableHTML(budget, actualObj, currency, asOfMonth){
   const cur = currency === "krw" ? fmtKRWPlain : fmtUSD;
+  const actualForCurrency = currency === "krw"
+    ? actualObj.krw
+    : actualObj.krw.map(v => v==null ? null : v/BLENDED_RATE);
+
   let head = `<tr><th></th>` + MONTHS.map((m,i)=>`<th class="${i===asOfMonth?'current':''}">${m}</th>`).join("") + `</tr>`;
   let rBudget = `<tr><td class="label">${currency.toUpperCase()} 목표</td>` + budget[currency].map(v=>`<td>${cur(v)}</td>`).join("") + `</tr>`;
-  let rActual = `<tr><td class="label">${currency.toUpperCase()} 실적</td>` + budget[currency].map((_,i)=>{
-    const fmt = currency === "usd" ? fmtInputUSD : fmtInputNum;
-    return `<td><input type="text" inputmode="numeric" data-metric="${currency}" data-idx="${i}" value="${fmt(actualObj[currency][i])}" placeholder="—"></td>`;
-  }).join("") + `</tr>`;
+
+  let rActual;
+  if(currency === "usd"){
+    rActual = `<tr><td class="label">USD 실적 <span class="auto-tag">(KRW 자동환산)</span></td>` +
+      actualForCurrency.map(v=>`<td style="color:var(--steel);">${v==null?"—":fmtUSD(v)}</td>`).join("") + `</tr>`;
+  } else {
+    rActual = `<tr><td class="label">KRW 실적</td>` + budget.krw.map((_,i)=>
+      `<td><input type="text" inputmode="numeric" data-metric="krw" data-idx="${i}" value="${fmtInputNum(actualObj.krw[i])}" placeholder="—"></td>`
+    ).join("") + `</tr>`;
+  }
+
   let rAch = `<tr><td class="label">Ach%</td>` + budget[currency].map((b,i)=>{
-    const a = actualObj[currency][i];
+    const a = actualForCurrency[i];
     const p = a==null ? null : (a/b)*100;
     return `<td style="color:${paceColor(p)}; font-weight:600;">${p==null?"—":p.toFixed(0)+"%"}</td>`;
   }).join("") + `</tr>`;
