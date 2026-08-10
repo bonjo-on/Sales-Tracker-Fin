@@ -57,9 +57,13 @@
   td.sep{border-top:2px solid var(--line);}
   td input{
     width:100%; box-sizing:border-box; text-align:center; border:1px solid transparent;
-    border-radius:5px; padding:5px 2px; font-size:12.5px; background:transparent; color:var(--ink);
+    border-radius:5px; padding:5px 2px; font-size:12.5px; font-family:inherit; font-weight:400;
+    background:transparent; color:var(--ink);
   }
   td input:focus{border:1px solid var(--steel); outline:none; background:#fff;}
+  td input::-webkit-outer-spin-button, td input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  td input[type=number]{ -moz-appearance:textfield; }
+  .table-title .unit{font-weight:400; color:var(--inkSoft); font-size:12px; margin-left:4px;}
   .table-scroll{overflow-x:auto;}
   .footnote{font-size:11.5px; color:var(--inkSoft); line-height:1.6;}
   .tabs-note{font-size:13px; color:var(--inkSoft);}
@@ -172,7 +176,11 @@ function persist(){
 
 // ---------- Helpers ----------
 const fmtKRW = n => n==null ? "—" : Math.round(n).toLocaleString("ko-KR") + "원";
+const fmtKRWPlain = n => n==null ? "—" : Math.round(n).toLocaleString("ko-KR");
 const fmtUSD = n => n==null ? "—" : "$" + Math.round(n).toLocaleString("en-US");
+const fmtInputNum = n => (n==null || n==="") ? "" : Math.round(n).toLocaleString("en-US");
+const fmtInputUSD = n => (n==null || n==="") ? "" : "$" + Math.round(n).toLocaleString("en-US");
+const fmtInputUnit = n => (n==null || n==="") ? "" : Math.round(n).toLocaleString("en-US") + "개";
 const fmtUnit = n => n==null ? "—" : Math.round(n).toLocaleString("en-US") + "개";
 const pct = (a,b) => (b===0||b==null) ? null : (a/b)*100;
 const sum = arr => arr.reduce((s,v)=> s + (v||0), 0);
@@ -288,9 +296,10 @@ function render(){
   drawChart(budgetSet[currency], actualSet[currency], asOfMonth, currency);
 
   // Table
-  document.getElementById("tableTitle").textContent = category==="total"
+  const unitLabel = currency === "krw" ? "(단위: 원)" : "(단위: USD)";
+  document.getElementById("tableTitle").innerHTML = category==="total"
     ? "월별 실적 입력 (Coronary·Peripheral 각 탭에서 입력)"
-    : `월별 실적 입력 — ${catLabel}`;
+    : `월별 실적 입력 — ${catLabel} <span class="unit">${unitLabel}</span>`;
   const tableArea = document.getElementById("tableArea");
   if(category === "total"){
     tableArea.innerHTML = `<div class="tabs-note">전체 탭은 조회 전용입니다. 실적을 입력하려면 상단에서 Coronary 또는 Peripheral을 선택하세요.</div>`;
@@ -301,12 +310,13 @@ function render(){
 }
 
 function buildTableHTML(budget, actualObj, currency, asOfMonth){
-  const cur = currency === "krw" ? fmtKRW : fmtUSD;
+  const cur = currency === "krw" ? fmtKRWPlain : fmtUSD;
   let head = `<tr><th></th>` + MONTHS.map((m,i)=>`<th class="${i===asOfMonth?'current':''}">${m}</th>`).join("") + `</tr>`;
   let rBudget = `<tr><td class="label">${currency.toUpperCase()} 목표</td>` + budget[currency].map(v=>`<td>${cur(v)}</td>`).join("") + `</tr>`;
-  let rActual = `<tr><td class="label">${currency.toUpperCase()} 실적</td>` + budget[currency].map((_,i)=>
-    `<td><input type="number" data-metric="${currency}" data-idx="${i}" value="${actualObj[currency][i]??''}" placeholder="—"></td>`
-  ).join("") + `</tr>`;
+  let rActual = `<tr><td class="label">${currency.toUpperCase()} 실적</td>` + budget[currency].map((_,i)=>{
+    const fmt = currency === "usd" ? fmtInputUSD : fmtInputNum;
+    return `<td><input type="text" inputmode="numeric" data-metric="${currency}" data-idx="${i}" value="${fmt(actualObj[currency][i])}" placeholder="—"></td>`;
+  }).join("") + `</tr>`;
   let rAch = `<tr><td class="label">Ach%</td>` + budget[currency].map((b,i)=>{
     const a = actualObj[currency][i];
     const p = a==null ? null : (a/b)*100;
@@ -314,7 +324,7 @@ function buildTableHTML(budget, actualObj, currency, asOfMonth){
   }).join("") + `</tr>`;
   let rUnitBudget = `<tr><td class="label sep">수량 목표</td>` + budget.unit.map(v=>`<td class="sep">${fmtUnit(v)}</td>`).join("") + `</tr>`;
   let rUnitActual = `<tr><td class="label">수량 실적</td>` + budget.unit.map((_,i)=>
-    `<td><input type="number" data-metric="unit" data-idx="${i}" value="${actualObj.unit[i]??''}" placeholder="—"></td>`
+    `<td><input type="text" inputmode="numeric" data-metric="unit" data-idx="${i}" value="${fmtInputUnit(actualObj.unit[i])}" placeholder="—"></td>`
   ).join("") + `</tr>`;
   return `<div class="table-scroll"><table><thead>${head}</thead><tbody>${rBudget}${rActual}${rAch}${rUnitBudget}${rUnitActual}</tbody></table></div>`;
 }
@@ -324,8 +334,8 @@ function bindTableInputs(category){
     inp.addEventListener('input', (e)=>{
       const metric = e.target.getAttribute('data-metric');
       const idx = Number(e.target.getAttribute('data-idx'));
-      const val = e.target.value;
-      state.actual[category][metric][idx] = val === "" ? null : Number(val);
+      const raw = e.target.value.replace(/,/g, '').replace(/[^0-9.-]/g, '');
+      state.actual[category][metric][idx] = raw === "" ? null : Number(raw);
       persist();
       render();
       // restore focus to the same cell after re-render
@@ -339,7 +349,8 @@ function bindTableInputs(category){
 function drawChart(budgetArr, actualArr, asOfMonth, currency){
   const canvas = document.getElementById("chart");
   const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.parentElement.clientWidth;
+  const PANEL_PADDING = 32; // .panel has 16px padding on each side
+  const cssW = canvas.parentElement.clientWidth - PANEL_PADDING;
   const cssH = 260;
   canvas.style.width = cssW+"px";
   canvas.style.height = cssH+"px";
@@ -349,7 +360,7 @@ function drawChart(budgetArr, actualArr, asOfMonth, currency){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cssW,cssH);
 
-  const padL = 46, padR = 10, padT = 10, padB = 26;
+  const padL = 46, padR = 6, padT = 18, padB = 26;
   const plotW = cssW - padL - padR;
   const plotH = cssH - padT - padB;
   const maxVal = Math.max(...budgetArr, ...actualArr.map(v=>v||0)) * 1.15;
@@ -388,11 +399,18 @@ function drawChart(budgetArr, actualArr, asOfMonth, currency){
   }
   ctx.textAlign = "left";
 
-  // legend
-  ctx.fillStyle = "#E3E0D6"; ctx.fillRect(padL, 2, 10, 10);
-  ctx.fillStyle = "#5B6478"; ctx.font="11px Inter, sans-serif"; ctx.fillText("Budget", padL+14, 11);
-  ctx.fillStyle = "#4E7AA7"; ctx.fillRect(padL+80, 2, 10, 10);
-  ctx.fillStyle = "#5B6478"; ctx.fillText("Actual", padL+94, 11);
+  // legend — top right, above DEC
+  ctx.font="11px Inter, sans-serif";
+  const swatch = 10, gap = 4, groupGap = 16;
+  const budgetW = swatch + gap + ctx.measureText("Budget").width;
+  const actualW = swatch + gap + ctx.measureText("Actual").width;
+  const legendRight = cssW - padR;
+  const actualStart = legendRight - actualW;
+  const budgetStart = actualStart - groupGap - budgetW;
+  ctx.fillStyle = "#E3E0D6"; ctx.fillRect(budgetStart, 2, swatch, swatch);
+  ctx.fillStyle = "#5B6478"; ctx.fillText("Budget", budgetStart+swatch+gap, 11);
+  ctx.fillStyle = "#4E7AA7"; ctx.fillRect(actualStart, 2, swatch, swatch);
+  ctx.fillStyle = "#5B6478"; ctx.fillText("Actual", actualStart+swatch+gap, 11);
 }
 
 // ---------- Events ----------
