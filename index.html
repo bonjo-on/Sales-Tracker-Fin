@@ -104,11 +104,18 @@
     <div class="divider"></div>
     <div class="seg" id="segCurrency"></div>
     <div class="divider"></div>
+    <div class="seg" id="segPeriod"></div>
+    <div class="divider"></div>
     <label class="inline">
       기준일
       <select id="asOfMonth"></select>
       <input type="number" class="ctrl" id="asOfDay" min="1" max="31" value="10">
       일
+    </label>
+    <div class="divider"></div>
+    <label class="inline" style="cursor:pointer;">
+      <input type="checkbox" id="cumulativeToggle" style="cursor:pointer;">
+      누적 Ach% 추이선 (초안)
     </label>
   </div>
   <div class="cards" id="cards"></div>
@@ -170,7 +177,57 @@ let state = {
   currency: "krw",
   asOfMonth: today.getMonth(),
   asOfDay: today.getDate(),
+  periodView: "month", // month | quarter | half | year
+  showCumulative: false,
 };
+// ---------- Period aggregation ----------
+const PERIOD_VIEWS = [
+  {val:"month", label:"월별"},
+  {val:"quarter", label:"분기별"},
+  {val:"half", label:"반기별"},
+  {val:"year", label:"연간"},
+];
+function periodGroups(view){
+  if(view==="quarter") return [[0,1,2],[3,4,5],[6,7,8],[9,10,11]];
+  if(view==="half") return [[0,1,2,3,4,5],[6,7,8,9,10,11]];
+  if(view==="year") return [[0,1,2,3,4,5,6,7,8,9,10,11]];
+  return MONTHS.map((_,i)=>[i]); // month
+}
+function periodLabels(view){
+  if(view==="quarter") return ["Q1","Q2","Q3","Q4"];
+  if(view==="half") return ["H1","H2"];
+  if(view==="year") return ["FY"];
+  return MONTHS;
+}
+function periodViewLabelKor(view){
+  return (PERIOD_VIEWS.find(p=>p.val===view)||{}).label || "월별";
+}
+// Aggregate a 12-length monthly array into the selected period granularity.
+// Actual arrays may contain nulls for not-yet-entered months; a period is null
+// only if every month within it is null (no data entered for that period yet).
+function aggregatePeriod(view, arr){
+  return periodGroups(view).map(g=>{
+    const vals = g.map(i=>arr[i]);
+    const has = vals.some(v=>v!=null);
+    return has ? sum(vals.map(v=>v||0)) : null;
+  });
+}
+// Cumulative Ach% line across periods (in the selected granularity), stopping
+// at the first period with no actual data — mirrors the existing YTD concept.
+function cumulativeAchLine(view, budgetArr, actualArr){
+  const bGroups = aggregatePeriod(view, budgetArr); // budget is always fully populated, never null
+  const aGroups = aggregatePeriod(view, actualArr);
+  let cumB = 0, cumA = 0;
+  return aGroups.map((a,i)=>{
+    cumB += bGroups[i];
+    if(a==null) return null;
+    cumA += a;
+    return cumB ? (cumA/cumB)*100 : null;
+  });
+}
+function currentPeriodIndex(view, asOfMonth){
+  return periodGroups(view).findIndex(g=>g.includes(asOfMonth));
+}
 // ---------- Load from localStorage ----------
 try {
   const saved = localStorage.getItem(STORAGE_KEY);
@@ -242,6 +299,10 @@ function render(){
     const [val,label]=o.split(":");
     return `<button class="${val===currency?'active':''}" data-cur="${val}">${label}</button>`;
   }).join("");
+  document.getElementById("segPeriod").innerHTML = PERIOD_VIEWS.map(p=>
+    `<button class="${p.val===state.periodView?'active':''}" data-period="${p.val}">${p.label}</button>`
+  ).join("");
+  document.getElementById("cumulativeToggle").checked = state.showCumulative;
   const asOfMonthSel = document.getElementById("asOfMonth");
   if(asOfMonthSel.options.length===0){
     MONTHS.forEach((m,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=m; asOfMonthSel.appendChild(o); });
@@ -301,8 +362,14 @@ function render(){
   }
   miniItems.push(`<div class="mini"><div class="label">YTD 수량 Ach%</div><div class="value" style="color:${paceColor(ytdAchUnit)}">${ytdAchUnit==null?"—":ytdAchUnit.toFixed(1)+"%"}</div></div>`);
   document.getElementById("miniRow").innerHTML = miniItems.join("");
-  document.getElementById("chartTitle").textContent = `월별 목표 vs 실적 (${catLabel} · ${currency.toUpperCase()})`;
-  drawChart(budgetSet[currency], actualSet[currency], asOfMonth, currency);
+  const view = state.periodView;
+  document.getElementById("chartTitle").textContent = `${periodViewLabelKor(view)} 목표 vs 실적 (${catLabel} · ${currency.toUpperCase()})`;
+  const chartLabels = periodLabels(view);
+  const chartBudget = aggregatePeriod(view, budgetSet[currency]); // budget is always fully populated, never null
+  const chartActual = aggregatePeriod(view, actualSet[currency]);
+  const chartHighlight = currentPeriodIndex(view, asOfMonth);
+  const chartCumulative = state.showCumulative ? cumulativeAchLine(view, budgetSet[currency], actualSet[currency]) : null;
+  drawChart(chartLabels, chartBudget, chartActual, chartHighlight, currency, chartCumulative);
   if(category === "total"){
     document.getElementById("gapPanel").style.display = "";
     renderGapPanel(asOfMonth);
@@ -435,7 +502,7 @@ function computeGapData(category, asOfMonth){
   }
   return { asp, gaps, ytdGapKRW, ytdGapUnits, currentMonth };
 }
-function drawChart(budgetArr, actualArr, asOfMonth, currency){
+function drawChart(labels, budgetArr, actualArr, highlightIndex, currency, cumulativeArr){
   const canvas = document.getElementById("chart");
   const dpr = window.devicePixelRatio || 1;
   const PANEL_PADDING = 32; // .panel has 16px padding on each side
@@ -448,14 +515,15 @@ function drawChart(budgetArr, actualArr, asOfMonth, currency){
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cssW,cssH);
-  const padL = 46, padR = 6, padT = 18, padB = 26;
+  const hasCumulative = cumulativeArr && cumulativeArr.some(v=>v!=null);
+  const padL = 46, padR = hasCumulative ? 38 : 6, padT = 18, padB = 26;
   const plotW = cssW - padL - padR;
   const plotH = cssH - padT - padB;
   const maxVal = Math.max(...budgetArr, ...actualArr.map(v=>v||0)) * 1.15;
-  const n = 12;
+  const n = labels.length;
   const groupW = plotW/n;
   const barW = groupW*0.32;
-  // gridlines
+  // gridlines (left axis — currency values)
   ctx.strokeStyle = "#E3E0D6";
   ctx.lineWidth = 1;
   ctx.fillStyle = "#5B6478";
@@ -478,24 +546,74 @@ function drawChart(budgetArr, actualArr, asOfMonth, currency){
       ctx.fillStyle = "#4E7AA7";
       ctx.fillRect(gx + groupW*0.14 + barW + 4, padT+plotH-aH, barW, aH);
     }
-    ctx.fillStyle = i===asOfMonth ? "#C97B63" : "#5B6478";
-    ctx.font = i===asOfMonth ? "bold 11px Inter, sans-serif" : "11px Inter, sans-serif";
+    ctx.fillStyle = i===highlightIndex ? "#C97B63" : "#5B6478";
+    ctx.font = i===highlightIndex ? "bold 11px Inter, sans-serif" : "11px Inter, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(MONTHS[i], gx+groupW/2, cssH-8);
+    ctx.fillText(labels[i], gx+groupW/2, cssH-8);
   }
   ctx.textAlign = "left";
-  // legend — top right, above DEC
+  // right axis + cumulative Ach% overlay (draft feature)
+  if(hasCumulative){
+    const maxPoint = Math.max(100, ...cumulativeArr.filter(v=>v!=null));
+    const rMax = Math.ceil((maxPoint+10)/25)*25;
+    const rSteps = 4;
+    ctx.font = "10.5px Inter, sans-serif";
+    ctx.fillStyle = "#C97B63";
+    ctx.textAlign = "left";
+    for(let s=0;s<=rSteps;s++){
+      const val = (rMax/rSteps)*s;
+      const y = padT + plotH - (val/rMax)*plotH;
+      ctx.fillText(Math.round(val)+"%", cssW-padR+4, y+3);
+    }
+    // 100% reference line (dashed)
+    const y100 = padT + plotH - (100/rMax)*plotH;
+    ctx.save();
+    ctx.setLineDash([4,3]);
+    ctx.strokeStyle = "#B8863B";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL,y100); ctx.lineTo(cssW-padR,y100); ctx.stroke();
+    ctx.restore();
+    // cumulative line
+    ctx.strokeStyle = "#C97B63";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    cumulativeArr.forEach((v,i)=>{
+      if(v==null){ started=false; return; }
+      const x = padL + i*groupW + groupW/2;
+      const y = padT + plotH - (v/rMax)*plotH;
+      if(!started){ ctx.moveTo(x,y); started=true; } else { ctx.lineTo(x,y); }
+    });
+    ctx.stroke();
+    ctx.fillStyle = "#C97B63";
+    cumulativeArr.forEach((v,i)=>{
+      if(v==null) return;
+      const x = padL + i*groupW + groupW/2;
+      const y = padT + plotH - (v/rMax)*plotH;
+      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+    });
+  }
+  // legend — top right, above last period
   ctx.font="11px Inter, sans-serif";
   const swatch = 10, gap = 4, groupGap = 16;
   const budgetW = swatch + gap + ctx.measureText("Budget").width;
   const actualW = swatch + gap + ctx.measureText("Actual").width;
+  const cumLabel = "누적 Ach%";
+  const cumW = hasCumulative ? (18 + gap + ctx.measureText(cumLabel).width) : 0;
   const legendRight = cssW - padR;
   const actualStart = legendRight - actualW;
   const budgetStart = actualStart - groupGap - budgetW;
+  const cumStart = hasCumulative ? budgetStart - groupGap - cumW : null;
   ctx.fillStyle = "#E3E0D6"; ctx.fillRect(budgetStart, 2, swatch, swatch);
   ctx.fillStyle = "#5B6478"; ctx.fillText("Budget", budgetStart+swatch+gap, 11);
   ctx.fillStyle = "#4E7AA7"; ctx.fillRect(actualStart, 2, swatch, swatch);
   ctx.fillStyle = "#5B6478"; ctx.fillText("Actual", actualStart+swatch+gap, 11);
+  if(hasCumulative){
+    ctx.strokeStyle = "#C97B63"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cumStart, 7); ctx.lineTo(cumStart+18, 7); ctx.stroke();
+    ctx.fillStyle = "#C97B63"; ctx.beginPath(); ctx.arc(cumStart+9,7,2.5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#5B6478"; ctx.fillText(cumLabel, cumStart+18+gap, 11);
+  }
 }
 // ---------- Events ----------
 document.getElementById("segCategory").addEventListener("click", e=>{
@@ -505,6 +623,13 @@ document.getElementById("segCategory").addEventListener("click", e=>{
 document.getElementById("segCurrency").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   state.currency = b.getAttribute("data-cur"); render();
+});
+document.getElementById("segPeriod").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  state.periodView = b.getAttribute("data-period"); render();
+});
+document.getElementById("cumulativeToggle").addEventListener("change", e=>{
+  state.showCumulative = e.target.checked; render();
 });
 document.getElementById("asOfMonth").addEventListener("change", e=>{
   state.asOfMonth = Number(e.target.value); render();
